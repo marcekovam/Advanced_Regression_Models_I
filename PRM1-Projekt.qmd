@@ -1,0 +1,695 @@
+---
+title: "M8752 Pokročilé regresní modely I"
+subtitle: "Úloha ku skúške"
+language: 
+  title-block-author-single: "Autor"
+  title-block-published: "Publikované"
+author: "Michaela Marčeková"
+date: "`r Sys.Date()`"
+lightbox:
+  match: auto
+  effect: fade
+crossref:
+  fig-title: Obrázok
+  tbl-title: Tabuľka
+format: 
+  html: 
+    fig-width: 6
+    fig-height: 4
+    page-layout: full
+    embed-resources: true
+    toc: true
+    toc-location: left
+    toc-title: Obsah
+    toc-expand: 2
+    number-sections: true
+    number-depth: 3
+    html-math-method: katex
+    smooth-scroll: true
+    link-external-newwindow: true
+    theme: lux
+    css: template.css
+    linkcolor: '#0D47A1'
+    highlight-style: kate
+    code-fold: show
+    code-tools:
+      source: true
+      toggle: true
+      caption: none
+---
+
+```{r}
+#| warning: false
+#| code-fold: true
+library(tidyr)
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+library(gtsummary)
+library(data.table)
+library(sandwich)
+```
+
+Dáta popisujú výsledky laboratórneho experimentu nejakého biologického rastového procesu. Experiment prebiehal počas niekoľkých dní (premenná `day`). V každý deň bola zaznamenaná dosiahnutá veľkosť (premenná `size`). Experiment prebiehal za rovnakých podmienok súčasne a nezávisle na viacerých experimentálnych jednotkách, ktoré sú označené premennou `id`. Cieľom je modelovať závislosť veľkosti od času.
+
+```{r}
+growth = fread("growth.csv")
+growth[,id:=as.factor(id)]
+setkey(growth,id,day)
+library(ggplot2); theme_set(theme_bw())
+ggplot(growth,aes(x=jitter(day),y=size,col=id)) +
+  geom_point() +
+  labs(x="Day",y="Size") + theme(legend.position="none")
+```
+
+Z grafu je vidieť, že rast sa v priebehu času spomaľuje a veľkosť sa blíži k nejakej limitnej hodnote. Preto bude vhodné uvažovať niektorý nelineárny rastový model. Pre tieto údaje je vhodný Gompertzov model.
+
+```{r}
+#| code-fold: true
+dat <- data.frame(growth)
+```
+
+
+# Popis dát {.unnumbered}
+
+| **Premenná** | **Typ**                      | **Popis**                                                                                  |
+|--------------|------------------------------|---------------------------------------------------------------------------------------------|
+| `id` | ID (factor) | identifikátor jednotky |
+| `day` | numerická (int) | čas v dňoch |
+| `size` | numerická (num) | pozorovaná veľkosť |
+
+```{r}
+#| filename: "Chýbajuce hodnoty"
+colSums(is.na(dat))
+```
+```{r}
+#| include: false
+# Exploratívna analýza {.unnumbered}
+
+#* $100$ nezávislých jednotiek
+#* pre každú jednotku $20$ pozorovaní počas $20$ dní
+```
+
+```{r summ}
+#| include: false
+#| warning: false
+#| code-fold: true
+dat |>
+  select(day, size) |>
+  tbl_summary(
+    by = day,
+    type = where(is.numeric) ~ "continuous2",
+    statistic = list(all_continuous() ~ c("{mean} ({sd})", "{min}, {max}"))
+  ) 
+```
+
+```{r}
+#| code-fold: true
+dat |> ggplot(aes(x = day, y = size, col = id)) +
+  geom_point() +
+  geom_line() +
+  labs(x = "Day", y = "Size") + 
+  theme(legend.position="none")
+```
+
+# Gompertzov model
+
+::: {.callout-caution appearance="simple" icon=false title="Zadanie" style="background-color: #ffffff;"}
+[Odhadněte Gompertzův model pro závislost velikosti na čase. Zkontrolujte konvergenci odhadovací procedury a smysluplnost hodnot odhadnutých parametrů. Zamyslete se nad možnými problémy v důsledku nesplnění běžných předpokladů, případně je ilustrujte pomocí vhodných diagnostických grafů.]{.darkgrey}
+:::
+
+::: {.callout-note appearance="simple" icon=false style="background-color: #ffffff;"}
+# Gompertzov model
+
+$$
+Y_i = A \cdot \text{exp}\{b \text{e}^{−r x_i}\} + \varepsilon_i
+$$
+
+* nezávislé chyby $\varepsilon_i$ 
+* bez systematickej chyby $\forall i:\,\text{E}\varepsilon_i = 0$ 
+* konštantný roztyl chýb $\forall i:\,\text{Var}\varepsilon_i = \sigma^2$
+* asymptota $A$
+* rast sa spomaľuje, keď sa hodnoty Gompertzovej krivky približujú k maximu $A$
+:::
+
+::: {.callout-note appearance="simple" icon=false style="background-color: #ffffff;"}
+# Gompertzov model v `R` pomocou `SSgompertz`
+
+$$
+A \cdot \text{exp}\{b \text{e}^{−r x}\} =
+Asym \cdot \text{exp}(-b_2 \cdot b_3^x)\\
+\Downarrow
+\\
+A = Asym \quad 
+b = -b_2 \quad
+\text{e}^{-r} = b_3
+$$
+:::
+
+```{r}
+#| filename: "Gompertzov model"
+gompertz_model <- nls(
+  size ~ SSgompertz(day, Asym, b2, b3),
+  data = dat
+)
+summary(gompertz_model)
+```
+
+Počet iterácií do konvergencie je 0 $\Rightarrow$ počiatočné hodnoty `SSgompertz` boli vhodné a model rýchlo odhadnutý. Presnosť `1.638e-08`, keď sa algoritmus zastavil, je dostatočne malá.
+
+::: {.callout-note appearance="simple" icon=false style="background-color: #ffffff;"}
+# Parametre
+
+```{r}
+#| code-fold: true
+coef(gompertz_model)
+```
+
+Odhad asymptotickej maximálnej veľkosti je $15.02$.
+
+$$
+\text{lim}_{x \to \inf} A \cdot \text{exp}\{b \text{e}^{−r x}\} = A 
+$$
+
+$$
+\text{lim}_{x \to \inf} Asym \cdot \text{exp}(-b_2 \cdot b_3^x) = Asym
+$$
+
+Relatívna rýchlosť rastu $r$ udáva, ako rýchlo rastie krivka vzhľadom na to, ako ďaleko je od svojej asymptoty.
+
+$$
+f(x) = A \cdot \text{exp}\{b \text{e}^{−r x}\} = Asym \cdot \text{exp}(-b_2 \cdot b_3^x) 
+$$
+
+$$
+\frac{f'(x)}{f(x)} = r \text{ln}\left(\frac{A}{f(x)}\right)
+= - \text{ln}(b_3) \cdot \text{ln}\left(\frac{Asym}{f(x)}\right)
+$$
+
+$$
+\text{e}^{-r} = b_3 = 0.74 \Rightarrow r = - \text{ln}(b_3) = 0.30
+$$
+
+```{r}
+-log(coef(gompertz_model)["b3"]) # growth rate r
+```
+
+```{r}
+#| code-fold: true
+#| fig-width: 5
+#| fig-height: 3.5
+df_mod <- data.frame(
+  day = seq(1, 20, by = 0.1)
+) |> mutate(
+  size = predict(gompertz_model, newdata = data.frame(day = day))
+)
+dat |> ggplot(aes(x = day, y = size, col = id)) +
+  geom_point() +
+  geom_line() +
+  labs(x = "Day", y = "Size") + 
+  theme(legend.position="none") +
+  geom_hline(yintercept = coef(gompertz_model)["Asym"], linetype = "dashed", color = "black") +
+  geom_line(data = df_mod, aes(x = day, y = size), 
+            inherit.aes = FALSE, color = "black", 
+            linewidth = 1)
+```
+:::
+
+Nesplnenie predpokladov mohlo nastať z dôvodov:
+
+* heteroskedasticita náhodných chýb (rozptyl je zjavne vyšší s rastúcim počtom dní);
+* chyby nemusia byť nezávislé vrámci jednej jednotky (medzi jednotkami môže byť nezávislosť neporušená).
+
+::: panel-tabset
+## [Residuals]{.darkblue}
+
+Heteroskedasticita reziduí.
+
+```{r diag1}
+#| warning: false
+#| layout-ncol: 2
+#| code-fold: true
+diagnostic_df <- dat
+diagnostic_df$resid <- residuals(gompertz_model)
+diagnostic_df$fitted <- fitted(gompertz_model)
+diagnostic_df$std_resid <- diagnostic_df$resid / sd(diagnostic_df$resid)
+diagnostic_df$scale_loc <- sqrt(abs(diagnostic_df$std_resid))
+
+# Residuals vs days
+diagnostic_df |> ggplot(aes(x = day, y = resid, color = factor(id))) +
+  geom_point(alpha = 0.5) +
+  geom_line() +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(x = "Day", y = "Residuals") +
+  theme(legend.position = "none")
+
+# Scale-Location
+diagnostic_df |> ggplot(aes(x = day, y = scale_loc, color = factor(id))) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "loess", se = FALSE, color = "black") +
+  labs(
+    x = "Day",
+    y = expression(sqrt("|Standardized residuals|"))) +
+  theme(legend.position = "none")
+```
+
+## [ACF & PACF]{.darkblue}
+
+Korelácia reziduí $\Rightarrow$ možno $AR(1)$ model.
+
+```{r diag2}
+#| code-fold: true
+#| layout-ncol: 2
+#| warning: false
+# Acf
+acf(diagnostic_df$resid, title = "", lag = 20)
+# Pacf
+pacf(diagnostic_df$resid, title = "", lag = 20)
+```
+
+:::
+
+Reziduá vyzerajú ako $AR(1)$ proces, kde šum nemá konštantný rozptyl, ale zväčšuje sa vzhľadom na čas.
+
+# Konfidenčné intervaly Gompertzovej krivky
+
+::: {.callout-caution appearance="simple" icon=false title="Zadanie" style="background-color: #ffffff;"}
+[Data se skládají z opakovaných pozorování na stejných experimentálních jednotkách. Musíme ale vzít v úvahu možnou korelaci pozorování v rámci stejné experimentální jednotky a také heteroskedasticitu. Vzhledem k tomu, že na všech jednotkách byly stejné podmínky, můžeme pracovat s modelem, který má pro všechny jednotky stejné parametry (nemusíme se zabývat jejich heterogenitou, tu je možné modelovat pomocí náhodných efektů, které uvidíme v dalším semestru).]{.darkgrey}
+[Odhadněte směrodatné chyby odhadů parametrů Gompertzova modelu a dále nakreslete graf odhadnuté Gompertzovy křivky spolu s 95% konfidenčními intervaly. Tip: Může se hodit balíček `sandwich`.]{.darkgrey}
+:::
+
+## Smerodajné odchýlky parametrov v modeli {.unnumbered}
+
+Ako som vyberala odhad kovariančnej matice:
+
+* `vcov(gompertz_model)` - naivný prístup
+* `vcovHAC(gompertz_model)` - zohľadňuje časovú autokoreláciu, ale nie clustre
+* `vcovCL(gompertz_model)` - zohľadňuje clustre, ale nie usporiadanie v clusteroch a časovú autokoreláciu
+* `vcovPL(gompertz_model)` - zohľadňuje clustre a aj usporiadanie v clusteroch a časovú autokoreláciu
+* `vcovPC(gompertz_model)` - zohľadňuje clustre a cross-sectional koreláciu. Ak som to správne pochopila, nezohľadňuje autokoreláciu vrámci clusteru, ale zohľadňuje koreláciu medzi clustrami
+
+V nasledujúcom kóde používam odhady kovariančnej matice:
+
+* `vcov(gompertz_model)` - naivný prístup
+* `vcovCL(gompertz_model, cluster = dat$id)` - clustre a korelácia
+* `vcovPL(gompertz_model, cluster = dat$id, order.by = dat$day)` - clustre a časová autokorelácia
+
+Odhad pomocou `vcovPL` sa mi zdá vhodnejší než `vcovCL`, ale metódy na časové rady a panelové dáta sú zvyčajne vhodné na dlhé (časové) dáta, čo 20 dní v tomto prípade nemusí spĺňať. Na druhej strane, reziduá pôsobia ako $AR(1)$ proces s rastúcim rozptylom chýb a myslím si, že na odhad pri jednom lagu môže stačiť aj kratšia časová rada (hlavne keď máme veľa clusterov).
+
+```{r}
+#| filename: "CI pre parametre v modeli"
+# Odhady parametrov a kovariancnej matice
+params <- c("Asym", "b2", "b3")
+estimates <- coef(gompertz_model)
+cov_Naive <- vcov(gompertz_model)
+cov_CL <- vcovCL(gompertz_model, cluster = dat$id)
+cov_PL <- vcovPL(gompertz_model, cluster = dat$id, order.by = dat$day)
+
+# Funkcia na vypocet CI
+compute_CI <- function(cov_mat, type) {
+  sd_vals <- sqrt(diag(cov_mat))
+  data.frame(
+    parameter = params,
+    estimate = estimates,
+    sd = sd_vals,
+    method = type,
+    lower = estimates - qnorm(0.975) * sd_vals,
+    upper = estimates + qnorm(0.975) * sd_vals
+  )
+}
+
+# CI
+CI_naive <- compute_CI(cov_Naive, "vcov")
+CI_CL <- compute_CI(cov_CL, "vcovCL")
+CI_PL <- compute_CI(cov_PL, "vcovPL")
+
+df_CI_param <- bind_rows(CI_naive, CI_CL, CI_PL) |>
+  mutate(parameter = factor(parameter, levels = params)) |>
+  arrange(parameter) |>
+  select(parameter, method, estimate, sd, lower, upper)
+knitr::kable(df_CI_param, digits = 4, row.names = FALSE)
+```
+
+
+```{r}
+#| code-fold: true
+df_CI_param |> 
+  ggplot(aes(x = parameter, y = estimate, ymin = lower, ymax = upper, color = method)) +
+  geom_pointrange(position = position_dodge(width = 0.4), size = 0.8) +
+  labs(
+    x = "Parameter",
+    y = "CI"
+  ) +
+  scale_color_manual(values = c("vcov" = "deepskyblue", "vcovCL" = "tomato", "vcovPL" = "firebrick")) +
+  theme(legend.title = element_blank()) +
+  facet_wrap(~parameter, scales = "free")
+```
+
+
+## Konfidenčné intervaly Gompertzovej krivky {.unnumbered}
+
+Pomocou delta metódy (Taylor) -- potrebujeme len gradient a odhadnutú kovariančnú maticu.
+
+```{r}
+#| filename: "CI pre krivku"
+#| warning: false
+# Odhadnuta krivka
+day_seq <- seq(0.5, 20.5, len = 101)
+model_fit <- predict(gompertz_model, newdata = data.frame(day = day_seq))
+
+# Gradient regresnej krivky
+#head(attr(model_fit, "gradient"))
+
+# Funkcia na vypocet:
+# Smerodajnej odchylky pre kazdy bod regresnej krivky
+# CI regresnej krivky
+CI_curve <- function(cov_mat, type) {
+  model_fit_se <- double(length(model_fit))
+  for (i in 1:length(model_fit_se)) {
+    model_fit_se[i] <- sqrt(t(attr(model_fit, "gradient")[i, ]) %*% cov_mat %*% attr(model_fit, "gradient")[i, ])
+  }
+  data.frame(
+    day = day_seq,
+    estimate = model_fit,
+    sd = model_fit_se,
+    method = type,
+    lower = model_fit - qnorm(0.975) * model_fit_se,
+    upper = model_fit + qnorm(0.975) * model_fit_se
+  )
+}
+
+# Bodove 95% CI pre krivku
+CI_naive <- CI_curve(cov_Naive, "vcov")
+CI_CL <- CI_curve(cov_CL, "vcovCL")
+CI_PL <- CI_curve(cov_PL, "vcovPL")
+```
+
+
+```{r}
+#| code-fold: true
+#| warning: false
+#| layout-ncol: 2
+df_CI <- bind_rows(CI_naive, CI_CL, CI_PL)
+df_CI |> ggplot(aes(x = day, y = estimate, group = as.factor(method))) +
+  geom_line(color = "deepskyblue", linewidth = 0.5) +
+  geom_ribbon(aes(ymin = lower, ymax = upper, fill = method), alpha = 0.5) + 
+  labs(x = "Day", y = "Size")
+
+df_CI |> ggplot(aes(x = day, y = estimate, group = as.factor(method))) +
+  geom_line(color = "deepskyblue", linewidth = 0.5) +
+  geom_ribbon(aes(ymin = lower, ymax = upper, fill = method), alpha = 0.5) + 
+  labs(x = "Day", y = "Size") +
+  xlim(c(17, 20)) +
+  ylim(c(14.5, 15))
+```
+
+# Odhad času dosiahnutia hodnoty
+
+::: {.callout-caution appearance="simple" icon=false title="Zadanie" style="background-color: #ffffff;"}
+[Odhadněte čas, kdy růstová křivka dosáhne:]{.darkgrey}
+
+* [hodnoty 12,]{.darkgrey}
+* [$80\%$ z limitní hodnoty.]{.darkgrey}
+:::
+
+$$
+\begin{aligned}
+y &= Asym \cdot \text{exp}(-b_2 \cdot b_3^x)\\
+\frac{y}{Asym} &= \text{exp}(-b_2 \cdot b_3^x)\\
+\text{ln}\left( \frac{y}{Asym} \right) &=
+-b_2 \cdot b_3^x \\
+b_3^x &= -\frac{1}{b_2} \text{ln}\left( \frac{y}{Asym} \right) \\
+x &= \text{log}_{b_3} \left[ -\frac{1}{b_2} \text{ln}\left( \frac{y}{Asym} \right) \right] \\
+x &= \frac{\text{ln} \left[ -\frac{1}{b_2} \text{ln}\left( \frac{y}{Asym} \right) \right]}{\text{ln}(b_3)}
+\end{aligned}
+$$
+
+```{r}
+Gompertz_inv <- function(y){
+  Asym <- coef(gompertz_model)[1]
+  b2 <- coef(gompertz_model)[2]
+  b3 <- coef(gompertz_model)[3]
+  log(-log(y/Asym)/b2)/log(b3)
+}
+
+# Dosiahnutie hodnoty
+df_val <- data.frame(
+  y = c(12, 0.8*coef(gompertz_model)[1])
+) |> mutate(
+  x = Gompertz_inv(y)
+)
+knitr::kable(df_val, digits = 4, row.names = FALSE)
+```
+
+
+```{r}
+#| code-fold: true
+df_CI |> filter(
+  method == "vcovPL"
+) |> ggplot(aes(x = day, y = estimate)) +
+  geom_line(color = "deepskyblue", linewidth = 0.5) +
+  labs(x = "Day", y = "Size") +
+  geom_hline(data = df_val, aes(yintercept = y), linetype = "dashed", color = "gray40") +
+  geom_vline(data = df_val, aes(xintercept = x), linetype = "dashed", color = "gray40") 
+```
+
+# Konfidenčný interval pre odhad času dosiahnutia hodnoty
+
+::: {.callout-caution appearance="simple" icon=false title="Zadanie" style="background-color: #ffffff;"}
+[Najděte 95% konfideční intervaly pro časy dosažení hodnot z předchozího bodu. Tip: Čas dosažení nějaké hodnoty je nelineární funkcí parametrů. Můžete využít některý z následujících postupů nebo nějaký jiný:]{.darkgrey}
+
+* [Interval založený na normálním rozdělení s využitím delta metody. Tento způsob vyžaduje analytické vyjádření nebo numerickou aproximaci derivací času dosažení podle jednotlivých parametrů.]{.darkgrey}
+* [Interval založený na normálním rozdělení s využitím simulace. Myšlenka je generovat mnoho realizací hodnot parametrů z přibližného rozdělení jejich odhadu, pro každou spočítat čas dosažení, z výsledného souboru časů dosažení odhadnout směrodatnou odchylku a použít ji v konstrukci intervalu.]{.darkgrey}
+* [Některý neparametrický interval založený na simulaci. Myšlenka je generovat soubor časů dosažení jako v předchozím postupu, ale interval konstruovat na základě empirických kvantilů těchto hodnot. Lze použít například takzvaný percentilový interval nebo základní interval, které se často používají v kombinaci s bootstrapem.]{.darkgrey}
+:::
+
+Už pracujeme iba s maticou `cov_PL`.
+
+## CI -- normálne rozdelenie, delta metóda {.unnumbered}
+
+Pre pevnú hodnotu $y$:
+
+$$
+x = \frac{\text{ln} \left[ -\frac{1}{b_2} \text{ln}\left( \frac{y}{Asym} \right) \right]}{\text{ln}(b_3)}
+$$
+
+$$
+\begin{aligned}
+\frac{\partial x}{\partial Asym} &= 
+- \frac{1}{Asym \cdot \text{ln}(b_3) \cdot \text{ln}\left( \frac{y}{Asym} \right)} \\
+\frac{\partial x}{\partial b_2} &=
+- \frac{1}{b_2 \cdot \text{ln}(b_3)} \\
+\frac{\partial x}{\partial b_3} &=
+- \frac{\text{ln} \left[ -\frac{1}{b_2} \text{ln}\left( \frac{y}{Asym} \right) \right]}{b_3 \cdot \left[ \text{ln}(b_3) \right]^2}
+\end{aligned}
+$$
+
+Pre $y = 0.8 \cdot Asym$ (funkcia parametru):
+
+$$
+x = \frac{\text{ln} \left[ -\frac{1}{b_2} \text{ln}\left( 0.8 \right) \right]}{\text{ln}(b_3)}
+$$
+
+$$
+\begin{aligned}
+\frac{\partial x}{\partial Asym} &= 0 \\
+\frac{\partial x}{\partial b_2} &=
+- \frac{1}{b_2 \cdot \text{ln}(b_3)} \\
+\frac{\partial x}{\partial b_3} &=
+- \frac{\text{ln} \left[ -\frac{1}{b_2} \text{ln}\left( 0.8 \right) \right]}{b_3 \cdot \left[ \text{ln}(b_3) \right]^2}
+\end{aligned}
+$$
+
+```{r}
+# Funkcia na vyhodnotenie derivacii inverznej Gompertzovej krivky podla parametrov
+x_grad <- function(y, asym = FALSE){
+  Asym <- coef(gompertz_model)[1]
+  b2 <- coef(gompertz_model)[2]
+  b3 <- coef(gompertz_model)[3]
+  if (asym == FALSE){
+    return(-c(1/(Asym * log(y/Asym) * log(b3)),
+     1/(b2 * log(b3)),
+     log(-log(y/Asym)/b2)/(b3 * log(b3)^2)))
+  } else {
+    return(-c(0,
+     1/(b2 * log(b3)),
+     log(-log(y/Asym)/b2)/(b3 * log(b3)^2)))
+  }
+}
+
+# Funkcia na CI dosiahnutia hodnoty y
+CI_norm_delta <- function(y, asym = FALSE){
+  day_estimate <- Gompertz_inv(y)
+  sd <- sqrt(t(x_grad(y, asym = asym)) %*% cov_PL %*% x_grad(y, asym = asym))
+  data.frame(
+    method = ifelse(asym == FALSE, "fixed_y", "function_y"),
+    size = y,
+    day_estimate = day_estimate,
+    type = "Norm_Delta",
+    lower = day_estimate - qnorm(0.975) * sd,
+    upper = day_estimate + qnorm(0.975) * sd
+  )
+}
+
+df_val_Norm_Delta_12 <- CI_norm_delta(12)
+df_val_Norm_Delta_80Asym <- CI_norm_delta(0.8*coef(gompertz_model)[1], asym = TRUE)
+df_val_Norm_Delta_80Asym_fix_y <- CI_norm_delta(0.8*coef(gompertz_model)[1])
+knitr::kable(rbind(df_val_Norm_Delta_12,
+                   df_val_Norm_Delta_80Asym,
+                   df_val_Norm_Delta_80Asym_fix_y), digits = 4, row.names = FALSE)
+```
+
+## CI -- normálne rozdelenie, simulácia {.unnumbered}
+
+```{r}
+#| warning: false
+library(MASS)
+
+# Funkcia na dosiahnutie hodnoty pomocou inych parametrov
+Gompertz_inv_params <- function(y, params){
+  Asym <- params[1]
+  b2 <- params[2]
+  b3 <- params[3]
+  log(-log(y/Asym)/b2)/log(b3)
+}
+
+# Funkcia na CI dosiahnutia hodnoty y
+CI_norm_sim <- function(y, asym = FALSE){
+  day_estimate <- Gompertz_inv(y)
+  set.seed(1)
+  param_sample <- mvrnorm(n = 100, 
+                          mu = coef(gompertz_model), 
+                          Sigma = cov_PL)
+  if (asym == FALSE){
+    day_sample <- sapply(1:nrow(param_sample),
+                       \(i){Gompertz_inv_params(y, param_sample[i, ])})
+  } else {
+    day_sample <- sapply(1:nrow(param_sample),
+                         \(i){Gompertz_inv_params(y = 0.8*param_sample[i, 1], 
+                                                  params = param_sample[i, ])})
+  }
+  sd <- sd(day_sample)
+  data.frame(
+    method = ifelse(asym == FALSE, "fixed_y", "function_y"),
+    size = y,
+    day_estimate = day_estimate,
+    type = "Norm_Sim",
+    lower = day_estimate - qnorm(0.975) * sd,
+    upper = day_estimate + qnorm(0.975) * sd
+  )
+}
+
+df_val_Norm_Sim_12 <- CI_norm_sim(12)
+df_val_Norm_Sim_80Asym <- CI_norm_sim(0.8*coef(gompertz_model)[1], asym = TRUE)
+df_val_Norm_Sim_80Asym_fix_y <- CI_norm_sim(0.8*coef(gompertz_model)[1])
+knitr::kable(rbind(df_val_Norm_Sim_12,
+                   df_val_Norm_Sim_80Asym,
+                   df_val_Norm_Sim_80Asym_fix_y), digits = 4, row.names = FALSE)
+```
+
+## CI -- simulácia, percentilový interval {.unnumbered}
+
+```{r}
+# Funkcia na CI dosiahnutia hodnoty y
+CI_sim <- function(y, asym = FALSE){
+  day_estimate <- Gompertz_inv(y)
+  set.seed(1)
+  param_sample <- mvrnorm(n = 100, 
+                          mu = coef(gompertz_model), 
+                          Sigma = cov_PL)
+  if (asym == FALSE){
+    day_sample <- sapply(1:nrow(param_sample),
+                       \(i){Gompertz_inv_params(y, param_sample[i, ])})
+  } else {
+    day_sample <- sapply(1:nrow(param_sample),
+                         \(i){Gompertz_inv_params(y = 0.8*param_sample[i, 1], 
+                                                  params = param_sample[i, ])})
+  }
+  data.frame(
+    method = ifelse(asym == FALSE, "fixed_y", "function_y"),
+    size = y,
+    day_estimate = day_estimate,
+    type = "Sim",
+    lower = quantile(day_sample, 0.025),
+    upper = quantile(day_sample, 0.975)
+  )
+}
+
+df_val_Sim_12 <- CI_sim(12)
+df_val_Sim_80Asym <- CI_sim(0.8*coef(gompertz_model)[1], asym = TRUE)
+df_val_Sim_80Asym_fix_y <- CI_sim(0.8*coef(gompertz_model)[1])
+knitr::kable(rbind(df_val_Sim_12,
+                   df_val_Sim_80Asym,
+                   df_val_Sim_80Asym_fix_y), digits = 4, row.names = FALSE)
+```
+
+## Porovnanie CI {.unnumbered}
+
+::: panel-tabset
+## [12]{.darkblue}
+
+```{r}
+#| warning: false
+#| code-fold: true
+df_val_12 <- rbind(df_val_Norm_Delta_12,
+                   df_val_Norm_Sim_12,
+                   df_val_Sim_12)
+knitr::kable(df_val_12, digits = 4, row.names = FALSE)
+
+df_val_12 |> ggplot(aes(x = type, y = day_estimate)) +
+  geom_point(color = "deepskyblue", size = 3) +
+  geom_errorbar(aes(ymin = lower, ymax = upper), width = 0.2, color = "black") +
+  labs(x = "Type", y = "Day")
+
+df_mod |> 
+  ggplot(aes(x = day, y = size)) +
+  geom_line(color = "deepskyblue", linewidth = 1) +
+  labs(x = "Day", y = "Size") +
+  geom_rect(data = df_val_12,
+            aes(xmin = lower, xmax = upper, ymin = -Inf, ymax = Inf, fill = type),
+            inherit.aes = FALSE,
+            alpha = 0.2) +
+  geom_hline(data = df_val_12, aes(yintercept = size), linetype = "dashed", color = "gray40") +
+  geom_vline(data = df_val_12, aes(xintercept = day_estimate), linetype = "dashed", color = "gray40") +
+  xlim(c(9.49, 9.71)) +
+  ylim(c(8, 15))
+```
+
+## [$80\%\,Asym$]{.darkblue}
+
+```{r}
+#| warning: false
+#| code-fold: true
+df_val_80Asym <- rbind(df_val_Norm_Delta_80Asym,
+                       df_val_Norm_Delta_80Asym_fix_y,
+                       df_val_Norm_Sim_80Asym,
+                       df_val_Norm_Sim_80Asym_fix_y,
+                       df_val_Sim_80Asym_fix_y,
+                       df_val_Sim_80Asym)
+knitr::kable(df_val_80Asym, digits = 4, row.names = FALSE)
+
+df_val_80Asym |> ggplot(aes(x = method, y = day_estimate)) +
+  geom_point(color = "deepskyblue", size = 3) +
+  geom_errorbar(aes(ymin = lower, ymax = upper), width = 0.2, color = "black") +
+  labs(x = "", y = "Day") +
+  facet_wrap(~type)
+
+df_val_80Asym <- df_val_80Asym |> filter(
+  method == "function_y"
+)
+
+df_mod |> 
+  ggplot(aes(x = day, y = size)) +
+  geom_line(color = "deepskyblue", linewidth = 1) +
+  labs(x = "Day", y = "Size") +
+  geom_rect(data = df_val_80Asym,
+            aes(xmin = lower, xmax = upper, ymin = -Inf, ymax = Inf, fill = type),
+            inherit.aes = FALSE,
+            alpha = 0.2) +
+  geom_hline(data = df_val_80Asym, aes(yintercept = size), linetype = "dashed", color = "gray40") +
+  geom_vline(data = df_val_80Asym, aes(xintercept = day_estimate), linetype = "dashed", color = "gray40") +
+  xlim(c(9.4, 9.8)) +
+  ylim(c(8, 15))
+```
+
+:::
